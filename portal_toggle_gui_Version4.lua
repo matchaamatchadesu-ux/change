@@ -1,0 +1,472 @@
+-- Portal JSON Toggle GUI
+-- 動作環境: Roblox client (一部の実行器の file API が必要)
+-- 概要: 指定した JSON ファイル内の replacement_rules[*].enabled を一括 ON/OFF する GUI
+
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+
+local localPlayer = Players.LocalPlayer
+if not localPlayer then repeat task.wait() until Players.LocalPlayer end
+
+-- ==== 設定: 対象ファイルパス（必要ならフルパスに変更） ====
+local files = {
+    { key = "purple_ttk", display = "purple ttk.json", path = "purple ttk.json" },
+    { key = "white_portal", display = "WhitePortal (1).json", path = "WhitePortal (1).json" },
+    { key = "purple_portal", display = "Purple Portal.json", path = "Purple Portal.json" },
+}
+
+-- ==== ファイル I/O ヘルパー（実行器によっては存在しない関数あり） ====
+local hasIsFile = type(isfile) == "function"
+local hasReadFile = type(readfile) == "function"
+local hasWriteFile = type(writefile) == "function"
+local hasMakeFolder = type(makefolder) == "function"
+
+local function fileExists(p)
+    if hasIsFile then
+        return isfile(p)
+    else
+        -- fallback: pcall readfile
+        if not hasReadFile then return false end
+        local ok = pcall(function() readfile(p) end)
+        return ok
+    end
+end
+
+local function readFileSafe(p)
+    if not hasReadFile then return nil, "readfile not available" end
+    local ok, res = pcall(function() return readfile(p) end)
+    if not ok then return nil, tostring(res) end
+    return res, nil
+end
+
+local function writeFileSafe(p, content)
+    if not hasWriteFile then return false, "writefile not available" end
+    local ok, res = pcall(function() writefile(p, content) end)
+    if not ok then return false, tostring(res) end
+    return true, nil
+end
+
+local function backupFile(p)
+    if not fileExists(p) then return false, "no source" end
+    local content, err = readFileSafe(p)
+    if not content then return false, err end
+    local bak = p .. ".bak"
+    return writeFileSafe(bak, content)
+end
+
+local function restoreBackup(p)
+    local bak = p .. ".bak"
+    if not fileExists(bak) then return false, "no backup" end
+    local content, err = readFileSafe(bak)
+    if not content then return false, err end
+    return writeFileSafe(p, content)
+end
+
+-- ==== JSON 操作 ====
+local function setAllRulesEnabled(jsonText, enable)
+    local ok, tbl = pcall(function() return HttpService:JSONDecode(jsonText) end)
+    if not ok or type(tbl) ~= "table" then return nil, "json decode failed" end
+    if type(tbl.replacement_rules) ~= "table" then return nil, "no replacement_rules" end
+    for _, r in ipairs(tbl.replacement_rules) do
+        if type(r) == "table" then r.enabled = enable end
+    end
+    local ok2, out = pcall(function() return HttpService:JSONEncode(tbl) end)
+    if not ok2 then return nil, "json encode failed" end
+    -- pretty-print（簡易）
+    local pretty = out:gsub("},%{", "},\n{")
+    return pretty, nil
+end
+
+-- ==== ファイル状態をメモリ上にロード ====
+local fileState = {} -- key -> { path, loadedJsonText, currentEnabled (bool or nil), lastError }
+for _, f in ipairs(files) do
+    fileState[f.key] = { path = f.path, display = f.display, loaded = false, json = nil, enabled = nil, err = nil }
+end
+
+local function loadFileIntoState(key)
+    local st = fileState[key]
+    if not st then return false, "invalid key" end
+    local p = st.path
+    if not fileExists(p) then
+        st.loaded = false; st.err = "file not found"; return false, st.err
+    end
+    local content, err = readFileSafe(p)
+    if not content then st.loaded = false; st.err = err; return false, err end
+    -- detect if all rules are enabled/disabled or mixed
+    local ok, tbl = pcall(function() return HttpService:JSONDecode(content) end)
+    if not ok or type(tbl) ~= "table" or type(tbl.replacement_rules) ~= "table" then
+        st.loaded = false; st.err = "invalid json"; return false, st.err
+    end
+    local anyTrue, anyFalse = false, false
+    for _, r in ipairs(tbl.replacement_rules) do
+        if type(r) == "table" and r.enabled ~= nil then
+            if r.enabled then anyTrue = true else anyFalse = true end
+        end
+    end
+    local current
+    if anyTrue and not anyFalse then current = true
+    elseif anyFalse and not anyTrue then current = false
+    else current = nil -- mixed
+    end
+    st.loaded = true
+    st.json = content
+    st.enabled = current
+    st.err = nil
+    return true, nil
+end
+
+-- 初期ロード（失敗しても GUI は出す）
+for _, f in ipairs(files) do
+    loadFileIntoState(f.key)
+end
+
+-- ==== GUI 作成（シンプルでモバイル対応） ====
+local playerGui = localPlayer:WaitForChild("PlayerGui")
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "PortalToggleGui"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = playerGui
+
+-- Root frame
+local root = Instance.new("Frame", screenGui)
+root.Name = "Root"
+root.Size = UDim2.fromOffset(420, 220)
+root.Position = UDim2.fromScale(0.5, 0.35)
+root.AnchorPoint = Vector2.new(0.5, 0.5)
+root.BackgroundColor3 = Color3.fromRGB(28,28,30)
+root.BorderSizePixel = 0
+root.Visible = true
+local rootCorner = Instance.new("UICorner", root); rootCorner.CornerRadius = UDim.new(0,10)
+
+-- Title bar
+local top = Instance.new("Frame", root)
+top.Name = "Top"
+top.Size = UDim2.new(1,0,0,36)
+top.Position = UDim2.new(0,0,0,0)
+top.BackgroundColor3 = Color3.fromRGB(40,40,44)
+local topCorner = Instance.new("UICorner", top); topCorner.CornerRadius = UDim.new(0,10)
+
+local title = Instance.new("TextLabel", top)
+title.Size = UDim2.new(1,-120,1,0)
+title.Position = UDim2.new(0,12,0,0)
+title.BackgroundTransparency = 1
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.TextYAlignment = Enum.TextYAlignment.Center
+title.Font = Enum.Font.GothamBold
+title.TextSize = 18
+title.TextColor3 = Color3.fromRGB(220,220,220)
+title.Text = "Portal Replacement Toggle"
+
+-- Minimize button (右上)
+local minBtn = Instance.new("TextButton", top)
+minBtn.Size = UDim2.new(0,28,0,28)
+minBtn.Position = UDim2.new(1,-36,0,4)
+minBtn.AnchorPoint = Vector2.new(0,0)
+minBtn.BackgroundColor3 = Color3.fromRGB(70,70,70)
+minBtn.Text = "_"
+minBtn.Font = Enum.Font.SourceSansBold
+minBtn.TextSize = 20
+minBtn.TextColor3 = Color3.fromRGB(255,255,255)
+local minCorner = Instance.new("UICorner", minBtn); minCorner.CornerRadius = UDim.new(0,6)
+
+-- Close button
+local closeBtn = Instance.new("TextButton", top)
+closeBtn.Size = UDim2.new(0,28,0,28)
+closeBtn.Position = UDim2.new(1,-72,0,4)
+closeBtn.BackgroundColor3 = Color3.fromRGB(200,60,60)
+closeBtn.Text = "×"
+closeBtn.Font = Enum.Font.SourceSansBold
+closeBtn.TextSize = 20
+closeBtn.TextColor3 = Color3.fromRGB(255,255,255)
+local closeCorner = Instance.new("UICorner", closeBtn); closeCorner.CornerRadius = UDim.new(0,6)
+
+-- Content area
+local content = Instance.new("Frame", root)
+content.Name = "Content"
+content.Position = UDim2.new(0,12,0,46)
+content.Size = UDim2.new(1,-24,1,-58)
+content.BackgroundTransparency = 1
+
+-- For each file, create a row
+local rows = {}
+local y = 0
+for i, f in ipairs(files) do
+    local rowF = Instance.new("Frame", content)
+    rowF.Size = UDim2.new(1,0,0,40)
+    rowF.Position = UDim2.new(0,0,0, y)
+    rowF.BackgroundTransparency = 1
+
+    local label = Instance.new("TextLabel", rowF)
+    label.Size = UDim2.new(0.6, 0, 1, 0)
+    label.Position = UDim2.new(0,0,0,0)
+    label.BackgroundTransparency = 1
+    label.Font = Enum.Font.Gotham
+    label.TextSize = 16
+    label.TextColor3 = Color3.fromRGB(230,230,230)
+    label.Text = f.display
+
+    local status = Instance.new("TextLabel", rowF)
+    status.Size = UDim2.new(0.3, -8, 1, 0)
+    status.Position = UDim2.new(0.6, 8, 0, 0)
+    status.BackgroundTransparency = 1
+    status.Font = Enum.Font.Gotham
+    status.TextSize = 14
+    status.TextXAlignment = Enum.TextXAlignment.Right
+    local st = fileState[f.key]
+    if st and st.loaded then
+        if st.enabled == true then status.Text = "All: ON"
+        elseif st.enabled == false then status.Text = "All: OFF"
+        else status.Text = "Mixed"
+        end
+    else
+        status.Text = "Not loaded"
+    end
+    status.TextColor3 = Color3.fromRGB(170,170,170)
+
+    -- Toggle button
+    local toggle = Instance.new("TextButton", rowF)
+    toggle.Size = UDim2.new(0,74,0,26)
+    toggle.Position = UDim2.new(1,-74,0.5,-13)
+    toggle.AnchorPoint = Vector2.new(0,0)
+    toggle.BackgroundColor3 = Color3.fromRGB(60,60,60)
+    toggle.Font = Enum.Font.GothamSemibold
+    toggle.TextSize = 14
+    toggle.TextColor3 = Color3.fromRGB(255,255,255)
+    toggle.Text = "Toggle"
+    local togCorner = Instance.new("UICorner", toggle); togCorner.CornerRadius = UDim.new(0,6)
+
+    rows[f.key] = { frame = rowF, label = label, status = status, toggle = toggle }
+
+    y = y + 46
+end
+
+-- 操作ボタン: Apply / Revert / Refresh
+local applyBtn = Instance.new("TextButton", content)
+applyBtn.Size = UDim2.new(0,120,0,30)
+applyBtn.Position = UDim2.new(0,0,1,-34)
+applyBtn.BackgroundColor3 = Color3.fromRGB(40,160,80)
+applyBtn.Font = Enum.Font.GothamBold
+applyBtn.Text = "Apply"
+applyBtn.TextColor3 = Color3.fromRGB(255,255,255)
+local applyCorner = Instance.new("UICorner", applyBtn); applyCorner.CornerRadius = UDim.new(0,8)
+
+local revertBtn = Instance.new("TextButton", content)
+revertBtn.Size = UDim2.new(0,120,0,30)
+revertBtn.Position = UDim2.new(0,130,1,-34)
+revertBtn.BackgroundColor3 = Color3.fromRGB(200,140,40)
+revertBtn.Font = Enum.Font.GothamBold
+revertBtn.Text = "Revert (.bak)"
+revertBtn.TextColor3 = Color3.fromRGB(255,255,255)
+local revertCorner = Instance.new("UICorner", revertBtn); revertCorner.CornerRadius = UDim.new(0,8)
+
+local refreshBtn = Instance.new("TextButton", content)
+refreshBtn.Size = UDim2.new(0,120,0,30)
+refreshBtn.Position = UDim2.new(0,260,1,-34)
+refreshBtn.BackgroundColor3 = Color3.fromRGB(100,100,100)
+refreshBtn.Font = Enum.Font.GothamBold
+refreshBtn.Text = "Refresh"
+refreshBtn.TextColor3 = Color3.fromRGB(255,255,255)
+local refreshCorner = Instance.new("UICorner", refreshBtn); refreshCorner.CornerRadius = UDim.new(0,8)
+
+-- Minimal floating restore button (hidden initially)
+local floatBtn = Instance.new("TextButton", screenGui)
+floatBtn.Name = "Float"
+floatBtn.Size = UDim2.fromOffset(160,36)
+floatBtn.Position = UDim2.new(0.5,0,0,8)
+floatBtn.AnchorPoint = Vector2.new(0.5,0)
+floatBtn.Visible = false
+floatBtn.BackgroundColor3 = Color3.fromRGB(45,45,50)
+floatBtn.Text = "Portal Toggle"
+floatBtn.Font = Enum.Font.GothamBold
+floatBtn.TextColor3 = Color3.fromRGB(230,230,230)
+local floatCorner = Instance.new("UICorner", floatBtn); floatCorner.CornerRadius = UDim.new(0,8)
+
+-- ユーティリティ: ステータス更新
+local function updateRowStatus(key)
+    local st = fileState[key]
+    local r = rows[key]
+    if not r or not st then return end
+    if not st.loaded then
+        r.status.Text = "Not loaded"
+        r.status.TextColor3 = Color3.fromRGB(200,80,80)
+    else
+        if st.enabled == true then
+            r.status.Text = "All: ON"
+            r.status.TextColor3 = Color3.fromRGB(120,220,120)
+        elseif st.enabled == false then
+            r.status.Text = "All: OFF"
+            r.status.TextColor3 = Color3.fromRGB(200,200,200)
+        else
+            r.status.Text = "Mixed"
+            r.status.TextColor3 = Color3.fromRGB(240,200,80)
+        end
+    end
+end
+
+-- 初期ステータス表示
+for k,_ in pairs(rows) do updateRowStatus(k) end
+
+-- トグル操作: メモリ上の値を切り替える（即書き込みはしない。Apply で反映）
+for key, v in pairs(rows) do
+    v.toggle.MouseButton1Click:Connect(function()
+        local st = fileState[key]
+        if not st or not st.loaded then
+            -- try to load now
+            local ok, err = loadFileIntoState(key)
+            if not ok then
+                v.label.Text = v.label.Text .. " (load failed)"
+                return
+            end
+            st = fileState[key]
+        end
+        -- 切替: mixed -> true, true->false, false->true
+        if st.enabled == nil then st.enabled = true
+        else st.enabled = not st.enabled
+        end
+        updateRowStatus(key)
+    end)
+end
+
+-- Apply ボタン: 各ファイルを backup -> JSON 書換 -> writefile
+applyBtn.MouseButton1Click:Connect(function()
+    for key, st in pairs(fileState) do
+        if not st.loaded then
+            -- try load
+            local ok, err = loadFileIntoState(key)
+            if not ok then
+                warn("Could not load", key, err); continue
+            end
+        end
+        if st.enabled == nil then
+            warn("skip (mixed):", key); continue
+        end
+        -- backup
+        local okbak, errbak = backupFile(st.path)
+        if not okbak then warn("backup failed for", st.path, errbak) end
+        -- prepare new json by setting all rules enabled/disabled
+        local newjson, err = setAllRulesEnabled(st.json, st.enabled)
+        if not newjson then warn("json modify failed:", key, err); continue end
+        local okw, errw = writeFileSafe(st.path, newjson)
+        if not okw then warn("write failed:", st.path, errw) else
+            st.json = newjson
+            -- reload in-memory to recalc status (should be uniform)
+            loadFileIntoState(key)
+            updateRowStatus(key)
+        end
+    end
+    -- small user feedback: flash title
+    local old = title.Text
+    title.Text = "Applied ✓"
+    delay(1.2, function() title.Text = old end)
+end)
+
+-- Revert ボタン: .bak を復元
+revertBtn.MouseButton1Click:Connect(function()
+    for key, st in pairs(fileState) do
+        if fileExists(st.path .. ".bak") then
+            local ok, err = restoreBackup(st.path)
+            if not ok then warn("restore failed:", st.path, err) else
+                loadFileIntoState(key)
+                updateRowStatus(key)
+            end
+        end
+    end
+    title.Text = "Restored backups"
+    delay(1.2, function() title.Text = "Portal Replacement Toggle" end)
+end)
+
+-- Refresh ボタン: 再ロード
+refreshBtn.MouseButton1Click:Connect(function()
+    for key,_ in pairs(fileState) do
+        loadFileIntoState(key)
+        updateRowStatus(key)
+    end
+    title.Text = "Refreshed"
+    delay(1, function() title.Text = "Portal Replacement Toggle" end)
+end)
+
+-- Minimize クリック
+minBtn.MouseButton1Click:Connect(function()
+    root.Visible = false
+    floatBtn.Visible = true
+end)
+
+floatBtn.MouseButton1Click:Connect(function()
+    root.Visible = true
+    floatBtn.Visible = false
+end)
+
+-- Close (削除) クリック: GUI を消す（ファイルはそのまま）
+closeBtn.MouseButton1Click:Connect(function()
+    screenGui:Destroy()
+end)
+
+-- ==== ドラッグ移動（マウス & タッチ対応） ====
+do
+    local dragging = false
+    local dragInput = nil
+    local dragStart = nil
+    local startPos = nil
+
+    local function update(input)
+        local delta = input.Position - dragStart
+        root.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+
+    top.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = root.Position
+            dragInput = input
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            update(input)
+        end
+    end)
+end
+
+-- Touch のために floatBtn もドラッグ可能にする
+do
+    local dragging = false
+    local dragInput = nil
+    local dragStart = nil
+    local startPos = nil
+
+    floatBtn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStart = input.Position
+            startPos = floatBtn.Position
+            dragInput = input
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and input == dragInput then
+            local delta = input.Position - dragStart
+            floatBtn.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+end
+
+-- 最後にロード状態を GUI に反映
+for k,_ in pairs(rows) do updateRowStatus(k) end
+
+-- 便利ログ
+print("[PortalToggleGui] loaded. Files monitored:")
+for _, f in ipairs(files) do
+    print(" -", f.display, "->", f.path)
+end
