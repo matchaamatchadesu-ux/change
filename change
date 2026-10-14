@@ -1,286 +1,506 @@
--- toggle_json_rules_executor.lua
--- Executor-oriented script to toggle replacement_rules[].enabled in local JSON files.
--- Requires: readfile, writefile, isfile (usual exploit file API). Uses HttpService for JSON parsing.
+-- toggle_portals.lua
+-- Roblox executor script
+-- Similar mechanism to:
+-- https://raw.githubusercontent.com/hatibeehub888-cmd/control/main/script.lua
+--
+-- This script toggles:
+--   replacement_rules[*].enabled
+-- in these files:
+--   - purple ttk.json
+--   - WhitePortal (1).json
+--   - Purple Portal.json
+--
+-- Requirements:
+--   - executor supports readfile/writefile/isfile
+--   - if using raw_url, URL must return raw JSON text
 
 local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local localPlayer = Players.LocalPlayer
+local playerGui = localPlayer:FindFirstChild("PlayerGui") or localPlayer:WaitForChild("PlayerGui")
 
--- ===== CONFIG: ここに対象ファイル名（またはフルパス）を入れてください =====
-local FILES = {
-    { name = "purple ttk.json" },
-    { name = "WhitePortal (1).json" },
-    { name = "Purple Portal.json" },
-}
--- ==========================================================================
-
-local function has_file_api()
-    return (type(readfile) == "function") and (type(writefile) == "function") and (type(isfile) == "function")
+local function hasFileAPI()
+    return type(readfile) == "function" and type(writefile) == "function" and type(isfile) == "function"
 end
 
-if not has_file_api() then
-    warn("[toggle_json_rules] readfile/writefile/isfile が利用できません。エグゼキューターのファイル API が必要です。")
+if not hasFileAPI() then
+    warn("[TogglePortals] readfile/writefile/isfile is required.")
     return
 end
 
-local function backup_file(filename, content)
-    local bakname = filename .. ".bak"
-    local ok, err = pcall(function() writefile(bakname, content) end)
-    return ok, err, bakname
+-- =========================
+-- 1) FILE LIST
+-- =========================
+local FILES = {
+    {
+        name = "purple ttk.json",
+        raw_url = nil, -- set if you want remote sync
+    },
+    {
+        name = "WhitePortal (1).json",
+        raw_url = nil,
+    },
+    {
+        name = "Purple Portal.json",
+        raw_url = nil,
+    }
+}
+
+-- Example:
+-- local FILES = {
+--   { name = "purple ttk.json", raw_url = "https://raw.githubusercontent.com/USERNAME/REPO/main/purple%20ttk.json" },
+--   { name = "WhitePortal (1).json", raw_url = "https://raw.githubusercontent.com/USERNAME/REPO/main/WhitePortal%20(1).json" },
+--   { name = "Purple Portal.json", raw_url = "https://raw.githubusercontent.com/USERNAME/REPO/main/Purple%20Portal.json" },
+-- }
+
+local function log(...)
+    print("[TogglePortals]", ...)
 end
 
-local function read_json_file(filename)
-    if not isfile(filename) then
-        return nil, ("file not found: %s"):format(filename)
+local function httpRequest(opts)
+    if syn and syn.request then
+        local ok, res = pcall(function()
+            return syn.request(opts)
+        end)
+        if ok then
+            return res
+        end
+        return nil, tostring(res)
     end
-    local ok, content = pcall(function() return readfile(filename) end)
-    if not ok then return nil, ("readfile failed: %s"):format(tostring(content)) end
-    local ok2, obj = pcall(function() return HttpService:JSONDecode(content) end)
-    if not ok2 then return nil, ("JSON decode failed: %s"):format(tostring(obj)) end
-    return { raw = content, obj = obj }, nil
+
+    if http_request then
+        local ok, res = pcall(function()
+            return http_request(opts)
+        end)
+        if ok then
+            return res
+        end
+        return nil, tostring(res)
+    end
+
+    if request then
+        local ok, res = pcall(function()
+            return request(opts)
+        end)
+        if ok then
+            return res
+        end
+        return nil, tostring(res)
+    end
+
+    return nil, "no HTTP request function available"
 end
 
-local function write_json_file(filename, obj)
-    local ok, encoded = pcall(function() return HttpService:JSONEncode(obj) end)
-    if not ok then return false, ("JSON encode failed: %s"):format(tostring(encoded)) end
-    local ok2, err2 = pcall(function() writefile(filename, encoded) end)
-    if not ok2 then return false, tostring(err2) end
+local function readJsonFile(fileName)
+    if not isfile(fileName) then
+        return nil, "file not found: " .. fileName
+    end
+
+    local ok, body = pcall(function()
+        return readfile(fileName)
+    end)
+    if not ok then
+        return nil, "readfile failed: " .. tostring(body)
+    end
+
+    local ok2, json = pcall(function()
+        return HttpService:JSONDecode(body)
+    end)
+    if not ok2 then
+        return nil, "JSON decode failed: " .. tostring(json)
+    end
+
+    return json, nil
+end
+
+local function writeJsonFile(fileName, obj)
+    local ok, encoded = pcall(function()
+        return HttpService:JSONEncode(obj)
+    end)
+    if not ok then
+        return false, "JSON encode failed: " .. tostring(encoded)
+    end
+
+    local ok2, err = pcall(function()
+        writefile(fileName, encoded)
+    end)
+    if not ok2 then
+        return false, "writefile failed: " .. tostring(err)
+    end
+
     return true, nil
 end
 
--- Python と同じルール：全 true -> false, 全 false -> true, mixed -> true
-local function compute_new_state(rules)
-    if type(rules) ~= "table" or #rules == 0 then return true end
-    local vals = {}
-    for _, r in ipairs(rules) do
-        if type(r) == "table" then
-            local v = true
-            if r.enabled == false then v = false end
-            table.insert(vals, v)
-        end
+local function backupFile(fileName, content)
+    local backupName = fileName .. ".bak"
+    local ok, err = pcall(function()
+        writefile(backupName, content)
+    end)
+    if not ok then
+        return false, "backup failed: " .. tostring(err), backupName
     end
-    if #vals == 0 then return true end
-    local all_true = true
-    local any_true = false
-    for _, v in ipairs(vals) do
-        if v then any_true = true else all_true = false end
-    end
-    if all_true then return false end
-    if not any_true then return true end
-    return true -- mixed -> ON
+    return true, nil, backupName
 end
 
-local function set_rules_enabled_in_obj(obj, enabled)
-    if type(obj) ~= "table" then return 0 end
-    local rules = obj.replacement_rules
-    if type(rules) ~= "table" then return 0 end
+local function fetchRemote(fileEntry)
+    if not fileEntry.raw_url then
+        return false, "no raw_url configured"
+    end
+
+    local res, err = httpRequest({
+        Url = fileEntry.raw_url,
+        Method = "GET",
+        Headers = {
+            ["Content-Type"] = "application/json"
+        }
+    })
+    if not res then
+        return false, err
+    end
+
+    if res.StatusCode and (res.StatusCode < 200 or res.StatusCode >= 300) then
+        return false, "HTTP status: " .. tostring(res.StatusCode)
+    end
+
+    local ok, body = pcall(function()
+        return res.Body
+    end)
+    if not ok then
+        return false, "no response body"
+    end
+
+    local ok2, parsed = pcall(function()
+        return HttpService:JSONDecode(body)
+    end)
+    if not ok2 then
+        return false, "remote JSON parse failed: " .. tostring(parsed)
+    end
+
+    -- save local copy
+    local ok3, err3 = pcall(function()
+        writefile(fileEntry.name, body)
+    end)
+    if not ok3 then
+        return false, "write remote JSON failed: " .. tostring(err3)
+    end
+
+    return true, "synced"
+end
+
+-- == rule logic ==
+-- all true => false
+-- all false => true
+-- mixed => true
+local function getTargetState(rules)
+    if type(rules) ~= "table" then
+        return true
+    end
+
+    local allTrue = true
+    local anyTrue = false
+
+    for _, rule in ipairs(rules) do
+        if type(rule) == "table" then
+            local enabled = rule.enabled ~= false
+            if enabled then
+                anyTrue = true
+            else
+                allTrue = false
+            end
+        end
+    end
+
+    if allTrue then
+        return false
+    end
+
+    if not anyTrue then
+        return true
+    end
+
+    return true
+end
+
+local function applyEnabledState(obj, enabled)
+    if type(obj) ~= "table" or type(obj.replacement_rules) ~= "table" then
+        return 0
+    end
+
     local changed = 0
-    for _, r in ipairs(rules) do
-        if type(r) == "table" then
-            local before = not (r.enabled == false)
-            if before ~= enabled then
-                r.enabled = enabled
+    for _, rule in ipairs(obj.replacement_rules) do
+        if type(rule) == "table" then
+            if rule.enabled ~= enabled then
+                rule.enabled = enabled
                 changed = changed + 1
             else
-                r.enabled = enabled
+                rule.enabled = enabled
             end
         end
     end
     return changed
 end
 
-local function process_file_toggle(entry, mode)
-    local filename = entry.name
-    local data, err = read_json_file(filename)
-    if not data then
+local function processFile(fileEntry, mode)
+    -- mode: "set_on" / "set_off" / "toggle" / "preview" / "fetch_remote"
+
+    if mode == "fetch_remote" then
+        return fetchRemote(fileEntry)
+    end
+
+    local obj, err = readJsonFile(fileEntry.name)
+    if not obj then
         return false, err
     end
-    local orig_raw = data.raw
-    local obj = data.obj
 
-    local target_enabled
-    if mode == "set_on" then target_enabled = true
-    elseif mode == "set_off" then target_enabled = false
-    elseif mode == "toggle" then target_enabled = compute_new_state(obj.replacement_rules)
-    elseif mode == "preview" then target_enabled = compute_new_state(obj.replacement_rules)
-    else return false, "unknown mode"
+    local originalRaw = HttpService:JSONEncode(obj)
+
+    local target
+    if mode == "set_on" then
+        target = true
+    elseif mode == "set_off" then
+        target = false
+    elseif mode == "toggle" then
+        target = getTargetState(obj.replacement_rules)
+    elseif mode == "preview" then
+        target = getTargetState(obj.replacement_rules)
+    else
+        return false, "unknown mode"
     end
 
-    local changed = set_rules_enabled_in_obj(obj, target_enabled)
+    local changed = applyEnabledState(obj, target)
 
-    -- backup
-    local okbak, bakerr, bakname = backup_file(filename, orig_raw)
-    if not okbak then
-        return false, ("backup failed: %s"):format(tostring(bakerr))
+    if mode == "preview" then
+        print("[Preview]", fileEntry.name, "->", tostring(target), "changed:", changed)
+        print(HttpService:JSONEncode(obj))
+        return true, { target = target, changed = changed }
     end
 
-    -- write
-    local okw, werr = write_json_file(filename, obj)
-    if not okw then
-        -- try to restore
-        pcall(function() writefile(filename, orig_raw) end)
-        return false, ("write failed: %s (restored original)"):format(tostring(werr))
+    local okBak, bakErr, bakName = backupFile(fileEntry.name, originalRaw)
+    if not okBak then
+        return false, bakErr, bakName
     end
 
-    return true, { changed = changed, target = target_enabled, backup = bakname }
+    local okWrite, writeErr = writeJsonFile(fileEntry.name, obj)
+    if not okWrite then
+        pcall(function()
+            writefile(fileEntry.name, originalRaw)
+        end)
+        return false, writeErr
+    end
+
+    return true, { target = target, changed = changed, backup = bakName }
 end
 
--- ===== GUI =====
-local Players = game:GetService("Players")
-local player = Players.LocalPlayer
-local playerGui = player:FindFirstChild("PlayerGui") or player:WaitForChild("PlayerGui")
+-- =========================
+-- 2) GUI
+-- =========================
+local function createGUI()
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "TogglePortalsGUI"
+    gui.ResetOnSpawn = false
+    gui.Parent = playerGui
 
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "ToggleRulesGUI"
-screenGui.ResetOnSpawn = false
-screenGui.Parent = playerGui
+    local main = Instance.new("Frame")
+    main.Size = UDim2.new(0, 560, 0, 290)
+    main.Position = UDim2.new(0, 18, 0, 80)
+    main.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    main.BorderSizePixel = 0
+    main.Parent = gui
 
-local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 420, 0, 180)
-frame.Position = UDim2.new(0, 20, 0, 80)
-frame.BackgroundColor3 = Color3.fromRGB(30,30,30)
-frame.BorderSizePixel = 0
-frame.Parent = screenGui
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 12)
+    corner.Parent = main
 
-local function makeText(text, pos)
-    local lbl = Instance.new("TextLabel", frame)
-    lbl.Size = UDim2.new(0, 200, 0, 20)
-    lbl.Position = pos
-    lbl.BackgroundTransparency = 1
-    lbl.TextColor3 = Color3.fromRGB(230,230,230)
-    lbl.TextSize = 14
-    lbl.Font = Enum.Font.Gotham
-    lbl.Text = text
-    return lbl
-end
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -40, 0, 32)
+    title.Position = UDim2.new(0, 20, 0, 10)
+    title.BackgroundTransparency = 1
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 18
+    title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    title.Text = "Portal JSON Toggle"
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = main
 
-local title = Instance.new("TextLabel", frame)
-title.Size = UDim2.new(1, 0, 0, 28)
-title.Position = UDim2.new(0, 0, 0, 4)
-title.BackgroundTransparency = 1
-title.TextColor3 = Color3.fromRGB(255,255,255)
-title.TextSize = 16
-title.Font = Enum.Font.GothamBold
-title.Text = "Toggle replacement_rules.enabled (local files)"
+    local statusMap = {}
 
--- per-file UI rows
-local buttons = {}
-for i, entry in ipairs(FILES) do
-    local y = 36 + (i-1) * 40
-    local nameLbl = makeText(entry.name, UDim2.new(0, 8, 0, y))
-    local statusLbl = Instance.new("TextLabel", frame)
-    statusLbl.Size = UDim2.new(0, 80, 0, 20)
-    statusLbl.Position = UDim2.new(0, 220, 0, y)
-    statusLbl.BackgroundTransparency = 1
-    statusLbl.TextColor3 = Color3.fromRGB(200,200,200)
-    statusLbl.TextSize = 14
-    statusLbl.Font = Enum.Font.Gotham
-    statusLbl.Text = isfile(entry.name) and "FOUND" or "MISSING"
+    local yStart = 52
+    for i, fileEntry in ipairs(FILES) do
+        local y = yStart + (i - 1) * 60
 
-    local function makeBtn(label, xpos, callback)
-        local btn = Instance.new("TextButton", frame)
-        btn.Size = UDim2.new(0, 64, 0, 22)
-        btn.Position = UDim2.new(0, xpos, 0, y)
-        btn.Text = label
-        btn.Font = Enum.Font.Gotham
-        btn.TextSize = 13
-        btn.BackgroundColor3 = Color3.fromRGB(60,60,60)
-        btn.TextColor3 = Color3.fromRGB(240,240,240)
-        btn.BorderSizePixel = 0
-        btn.AutoButtonColor = true
-        btn.MouseButton1Click:Connect(callback)
-        return btn
+        local nameLabel = Instance.new("TextLabel")
+        nameLabel.Size = UDim2.new(0, 200, 0, 22)
+        nameLabel.Position = UDim2.new(0, 14, 0, y)
+        nameLabel.Text = fileEntry.name
+        nameLabel.Font = Enum.Font.Gotham
+        nameLabel.TextSize = 13
+        nameLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
+        nameLabel.BackgroundTransparency = 1
+        nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+        nameLabel.Parent = main
+
+        local statusLabel = Instance.new("TextLabel")
+        statusLabel.Size = UDim2.new(0, 120, 0, 20)
+        statusLabel.Position = UDim2.new(0, 250, 0, y + 1)
+        statusLabel.Text = isfile(fileEntry.name) and "LOCAL" or "MISSING"
+        statusLabel.Font = Enum.Font.Gotham
+        statusLabel.TextSize = 12
+        statusLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+        statusLabel.BackgroundTransparency = 1
+        statusLabel.Parent = main
+
+        local function btn(text, x, cb)
+            local b = Instance.new("TextButton")
+            b.Size = UDim2.new(0, 68, 0, 24)
+            b.Position = UDim2.new(0, x, 0, y)
+            b.Text = text
+            b.Font = Enum.Font.GothamBold
+            b.TextSize = 11
+            b.TextColor3 = Color3.fromRGB(255, 255, 255)
+            b.BackgroundColor3 = Color3.fromRGB(68, 68, 68)
+            b.BorderSizePixel = 0
+            b.AutoButtonColor = false
+            b.Parent = main
+
+            local c = Instance.new("UICorner")
+            c.CornerRadius = UDim.new(0, 6)
+            c.Parent = b
+
+            b.MouseButton1Click:Connect(cb)
+            return b
+        end
+
+        local btnPreview = btn("PREVIEW", 426, function()
+            local ok, res = processFile(fileEntry, "preview")
+            if ok then
+                statusLabel.Text = "PREVIEW"
+            else
+                statusLabel.Text = "ERR"
+                warn(res)
+            end
+        end)
+
+        local btnToggle = btn("TOGGLE", 350, function()
+            local ok, res = processFile(fileEntry, "toggle")
+            if ok then
+                statusLabel.Text = tostring(res.target)
+            else
+                statusLabel.Text = "ERR"
+                warn(res)
+            end
+        end)
+
+        local btnOn = btn("ON", 278, function()
+            local ok, res = processFile(fileEntry, "set_on")
+            if ok then
+                statusLabel.Text = "ON"
+            else
+                statusLabel.Text = "ERR"
+                warn(res)
+            end
+        end)
+
+        local btnOff = btn("OFF", 206, function()
+            local ok, res = processFile(fileEntry, "set_off")
+            if ok then
+                statusLabel.Text = "OFF"
+            else
+                statusLabel.Text = "ERR"
+                warn(res)
+            end
+        end)
+
+        local btnRemote = btn("SYNC", 134, function()
+            if not fileEntry.raw_url then
+                statusLabel.Text = "NO URL"
+                return
+            end
+
+            local ok, res = processFile(fileEntry, "fetch_remote")
+            if ok then
+                statusLabel.Text = "SYNCED"
+            else
+                statusLabel.Text = "ERR"
+                warn(res)
+            end
+        end)
+
+        statusMap[fileEntry.name] = statusLabel
     end
 
-    local btnOn = makeBtn("SET ON", 300, function()
-        local ok, res = process_file_toggle(entry, "set_on")
-        if ok then
-            statusLbl.Text = ("OK: set ON (%d changed)"):format(res.changed)
-        else
-            statusLbl.Text = "ERR: "..tostring(res)
+    -- master buttons
+    local masterY = yStart + (#FILES * 60) + 10
+
+    local function masterBtn(text, x, cb)
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(0, 150, 0, 28)
+        b.Position = UDim2.new(0, x, 0, masterY)
+        b.Text = text
+        b.Font = Enum.Font.GothamBold
+        b.TextSize = 12
+        b.TextColor3 = Color3.fromRGB(255, 255, 255)
+        b.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
+        b.BorderSizePixel = 0
+        b.AutoButtonColor = false
+        b.Parent = main
+
+        local c = Instance.new("UICorner")
+        c.CornerRadius = UDim.new(0, 8)
+        c.Parent = b
+
+        b.MouseButton1Click:Connect(cb)
+    end
+
+    masterBtn("ALL ON", 14, function()
+        for _, fileEntry in ipairs(FILES) do
+            local ok, res = processFile(fileEntry, "set_on")
+            if statusMap[fileEntry.name] then
+                statusMap[fileEntry.name].Text = ok and "ON" or "ERR"
+            end
+            if not ok then warn(res) end
         end
     end)
-    local btnOff = makeBtn("SET OFF", 370, function()
-        local ok, res = process_file_toggle(entry, "set_off")
-        if ok then
-            statusLbl.Text = ("OK: set OFF (%d changed)"):format(res.changed)
-        else
-            statusLbl.Text = "ERR: "..tostring(res)
-        end
-    end)
-    local btnToggle = makeBtn("TOGGLE", 236, function()
-        local ok, res = process_file_toggle(entry, "toggle")
-        if ok then
-            statusLbl.Text = ("OK: toggle -> %s (%d changed)"):format(tostring(res.target), res.changed)
-        else
-            statusLbl.Text = "ERR: "..tostring(res)
+
+    masterBtn("ALL OFF", 186, function()
+        for _, fileEntry in ipairs(FILES) do
+            local ok, res = processFile(fileEntry, "set_off")
+            if statusMap[fileEntry.name] then
+                statusMap[fileEntry.name].Text = ok and "OFF" or "ERR"
+            end
+            if not ok then warn(res) end
         end
     end)
 
-    buttons[entry.name] = { on = btnOn, off = btnOff, toggle = btnToggle, status = statusLbl }
+    masterBtn("ALL TOGGLE", 358, function()
+        for _, fileEntry in ipairs(FILES) do
+            local ok, res = processFile(fileEntry, "toggle")
+            if statusMap[fileEntry.name] then
+                statusMap[fileEntry.name].Text = ok and tostring(res.target) or "ERR"
+            end
+            if not ok then warn(res) end
+        end
+    end)
+
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.new(0, 30, 0, 24)
+    closeBtn.Position = UDim2.new(1, -36, 0, 8)
+    closeBtn.Text = "X"
+    closeBtn.Font = Enum.Font.GothamBold
+    closeBtn.TextSize = 14
+    closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(170, 60, 60)
+    closeBtn.BorderSizePixel = 0
+    closeBtn.Parent = main
+
+    local closeCorner = Instance.new("UICorner")
+    closeCorner.CornerRadius = UDim.new(0, 8)
+    closeCorner.Parent = closeBtn
+
+    closeBtn.MouseButton1Click:Connect(function()
+        gui:Destroy()
+    end)
+
+    log("GUI created")
 end
 
--- master controls
-local function makeMasterBtn(text, pos, cb)
-    local b = Instance.new("TextButton", frame)
-    b.Size = UDim2.new(0, 110, 0, 28)
-    b.Position = pos
-    b.Text = text
-    b.Font = Enum.Font.GothamBold
-    b.TextSize = 14
-    b.BackgroundColor3 = Color3.fromRGB(80,80,80)
-    b.TextColor3 = Color3.fromRGB(255,255,255)
-    b.BorderSizePixel = 0
-    b.MouseButton1Click:Connect(cb)
-    return b
-end
-
-makeMasterBtn("ALL -> ON", UDim2.new(0, 20, 0, 36 + #FILES*40), function()
-    for _, entry in ipairs(FILES) do
-        local ok, res = process_file_toggle(entry, "set_on")
-        local st = buttons[entry.name] and buttons[entry.name].status
-        if ok then
-            if st then st.Text = ("OK: set ON (%d)"):format(res.changed) end
-        else
-            if st then st.Text = "ERR: "..tostring(res) end
-        end
-    end
-end)
-
-makeMasterBtn("ALL -> OFF", UDim2.new(0, 140, 0, 36 + #FILES*40), function()
-    for _, entry in ipairs(FILES) do
-        local ok, res = process_file_toggle(entry, "set_off")
-        local st = buttons[entry.name] and buttons[entry.name].status
-        if ok then
-            if st then st.Text = ("OK: set OFF (%d)"):format(res.changed) end
-        else
-            if st then st.Text = "ERR: "..tostring(res) end
-        end
-    end
-end)
-
-makeMasterBtn("ALL -> TOGGLE", UDim2.new(0, 260, 0, 36 + #FILES*40), function()
-    for _, entry in ipairs(FILES) do
-        local ok, res = process_file_toggle(entry, "toggle")
-        local st = buttons[entry.name] and buttons[entry.name].status
-        if ok then
-            if st then st.Text = ("OK: toggle -> %s (%d)"):format(tostring(res.target), res.changed) end
-        else
-            if st then st.Text = "ERR: "..tostring(res) end
-        end
-    end
-end)
-
--- small helper: close GUI
-local closeBtn = Instance.new("TextButton", frame)
-closeBtn.Size = UDim2.new(0, 24, 0, 20)
-closeBtn.Position = UDim2.new(1, -30, 0, 6)
-closeBtn.Text = "X"
-closeBtn.Font = Enum.Font.GothamBold
-closeBtn.TextSize = 14
-closeBtn.BackgroundColor3 = Color3.fromRGB(150,50,50)
-closeBtn.TextColor3 = Color3.fromRGB(255,255,255)
-closeBtn.BorderSizePixel = 0
-closeBtn.MouseButton1Click:Connect(function()
-    screenGui:Destroy()
-end)
-
-print("[toggle_json_rules] GUI created. Use buttons to set ON/OFF/TOGGLE. Backups (*.bak) are created before overwriting.")
+createGUI()
