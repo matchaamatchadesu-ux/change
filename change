@@ -1,0 +1,286 @@
+-- toggle_json_rules_executor.lua
+-- Executor-oriented script to toggle replacement_rules[].enabled in local JSON files.
+-- Requires: readfile, writefile, isfile (usual exploit file API). Uses HttpService for JSON parsing.
+
+local HttpService = game:GetService("HttpService")
+
+-- ===== CONFIG: ここに対象ファイル名（またはフルパス）を入れてください =====
+local FILES = {
+    { name = "purple ttk.json" },
+    { name = "WhitePortal (1).json" },
+    { name = "Purple Portal.json" },
+}
+-- ==========================================================================
+
+local function has_file_api()
+    return (type(readfile) == "function") and (type(writefile) == "function") and (type(isfile) == "function")
+end
+
+if not has_file_api() then
+    warn("[toggle_json_rules] readfile/writefile/isfile が利用できません。エグゼキューターのファイル API が必要です。")
+    return
+end
+
+local function backup_file(filename, content)
+    local bakname = filename .. ".bak"
+    local ok, err = pcall(function() writefile(bakname, content) end)
+    return ok, err, bakname
+end
+
+local function read_json_file(filename)
+    if not isfile(filename) then
+        return nil, ("file not found: %s"):format(filename)
+    end
+    local ok, content = pcall(function() return readfile(filename) end)
+    if not ok then return nil, ("readfile failed: %s"):format(tostring(content)) end
+    local ok2, obj = pcall(function() return HttpService:JSONDecode(content) end)
+    if not ok2 then return nil, ("JSON decode failed: %s"):format(tostring(obj)) end
+    return { raw = content, obj = obj }, nil
+end
+
+local function write_json_file(filename, obj)
+    local ok, encoded = pcall(function() return HttpService:JSONEncode(obj) end)
+    if not ok then return false, ("JSON encode failed: %s"):format(tostring(encoded)) end
+    local ok2, err2 = pcall(function() writefile(filename, encoded) end)
+    if not ok2 then return false, tostring(err2) end
+    return true, nil
+end
+
+-- Python と同じルール：全 true -> false, 全 false -> true, mixed -> true
+local function compute_new_state(rules)
+    if type(rules) ~= "table" or #rules == 0 then return true end
+    local vals = {}
+    for _, r in ipairs(rules) do
+        if type(r) == "table" then
+            local v = true
+            if r.enabled == false then v = false end
+            table.insert(vals, v)
+        end
+    end
+    if #vals == 0 then return true end
+    local all_true = true
+    local any_true = false
+    for _, v in ipairs(vals) do
+        if v then any_true = true else all_true = false end
+    end
+    if all_true then return false end
+    if not any_true then return true end
+    return true -- mixed -> ON
+end
+
+local function set_rules_enabled_in_obj(obj, enabled)
+    if type(obj) ~= "table" then return 0 end
+    local rules = obj.replacement_rules
+    if type(rules) ~= "table" then return 0 end
+    local changed = 0
+    for _, r in ipairs(rules) do
+        if type(r) == "table" then
+            local before = not (r.enabled == false)
+            if before ~= enabled then
+                r.enabled = enabled
+                changed = changed + 1
+            else
+                r.enabled = enabled
+            end
+        end
+    end
+    return changed
+end
+
+local function process_file_toggle(entry, mode)
+    local filename = entry.name
+    local data, err = read_json_file(filename)
+    if not data then
+        return false, err
+    end
+    local orig_raw = data.raw
+    local obj = data.obj
+
+    local target_enabled
+    if mode == "set_on" then target_enabled = true
+    elseif mode == "set_off" then target_enabled = false
+    elseif mode == "toggle" then target_enabled = compute_new_state(obj.replacement_rules)
+    elseif mode == "preview" then target_enabled = compute_new_state(obj.replacement_rules)
+    else return false, "unknown mode"
+    end
+
+    local changed = set_rules_enabled_in_obj(obj, target_enabled)
+
+    -- backup
+    local okbak, bakerr, bakname = backup_file(filename, orig_raw)
+    if not okbak then
+        return false, ("backup failed: %s"):format(tostring(bakerr))
+    end
+
+    -- write
+    local okw, werr = write_json_file(filename, obj)
+    if not okw then
+        -- try to restore
+        pcall(function() writefile(filename, orig_raw) end)
+        return false, ("write failed: %s (restored original)"):format(tostring(werr))
+    end
+
+    return true, { changed = changed, target = target_enabled, backup = bakname }
+end
+
+-- ===== GUI =====
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+local playerGui = player:FindFirstChild("PlayerGui") or player:WaitForChild("PlayerGui")
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "ToggleRulesGUI"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = playerGui
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, 420, 0, 180)
+frame.Position = UDim2.new(0, 20, 0, 80)
+frame.BackgroundColor3 = Color3.fromRGB(30,30,30)
+frame.BorderSizePixel = 0
+frame.Parent = screenGui
+
+local function makeText(text, pos)
+    local lbl = Instance.new("TextLabel", frame)
+    lbl.Size = UDim2.new(0, 200, 0, 20)
+    lbl.Position = pos
+    lbl.BackgroundTransparency = 1
+    lbl.TextColor3 = Color3.fromRGB(230,230,230)
+    lbl.TextSize = 14
+    lbl.Font = Enum.Font.Gotham
+    lbl.Text = text
+    return lbl
+end
+
+local title = Instance.new("TextLabel", frame)
+title.Size = UDim2.new(1, 0, 0, 28)
+title.Position = UDim2.new(0, 0, 0, 4)
+title.BackgroundTransparency = 1
+title.TextColor3 = Color3.fromRGB(255,255,255)
+title.TextSize = 16
+title.Font = Enum.Font.GothamBold
+title.Text = "Toggle replacement_rules.enabled (local files)"
+
+-- per-file UI rows
+local buttons = {}
+for i, entry in ipairs(FILES) do
+    local y = 36 + (i-1) * 40
+    local nameLbl = makeText(entry.name, UDim2.new(0, 8, 0, y))
+    local statusLbl = Instance.new("TextLabel", frame)
+    statusLbl.Size = UDim2.new(0, 80, 0, 20)
+    statusLbl.Position = UDim2.new(0, 220, 0, y)
+    statusLbl.BackgroundTransparency = 1
+    statusLbl.TextColor3 = Color3.fromRGB(200,200,200)
+    statusLbl.TextSize = 14
+    statusLbl.Font = Enum.Font.Gotham
+    statusLbl.Text = isfile(entry.name) and "FOUND" or "MISSING"
+
+    local function makeBtn(label, xpos, callback)
+        local btn = Instance.new("TextButton", frame)
+        btn.Size = UDim2.new(0, 64, 0, 22)
+        btn.Position = UDim2.new(0, xpos, 0, y)
+        btn.Text = label
+        btn.Font = Enum.Font.Gotham
+        btn.TextSize = 13
+        btn.BackgroundColor3 = Color3.fromRGB(60,60,60)
+        btn.TextColor3 = Color3.fromRGB(240,240,240)
+        btn.BorderSizePixel = 0
+        btn.AutoButtonColor = true
+        btn.MouseButton1Click:Connect(callback)
+        return btn
+    end
+
+    local btnOn = makeBtn("SET ON", 300, function()
+        local ok, res = process_file_toggle(entry, "set_on")
+        if ok then
+            statusLbl.Text = ("OK: set ON (%d changed)"):format(res.changed)
+        else
+            statusLbl.Text = "ERR: "..tostring(res)
+        end
+    end)
+    local btnOff = makeBtn("SET OFF", 370, function()
+        local ok, res = process_file_toggle(entry, "set_off")
+        if ok then
+            statusLbl.Text = ("OK: set OFF (%d changed)"):format(res.changed)
+        else
+            statusLbl.Text = "ERR: "..tostring(res)
+        end
+    end)
+    local btnToggle = makeBtn("TOGGLE", 236, function()
+        local ok, res = process_file_toggle(entry, "toggle")
+        if ok then
+            statusLbl.Text = ("OK: toggle -> %s (%d changed)"):format(tostring(res.target), res.changed)
+        else
+            statusLbl.Text = "ERR: "..tostring(res)
+        end
+    end)
+
+    buttons[entry.name] = { on = btnOn, off = btnOff, toggle = btnToggle, status = statusLbl }
+end
+
+-- master controls
+local function makeMasterBtn(text, pos, cb)
+    local b = Instance.new("TextButton", frame)
+    b.Size = UDim2.new(0, 110, 0, 28)
+    b.Position = pos
+    b.Text = text
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 14
+    b.BackgroundColor3 = Color3.fromRGB(80,80,80)
+    b.TextColor3 = Color3.fromRGB(255,255,255)
+    b.BorderSizePixel = 0
+    b.MouseButton1Click:Connect(cb)
+    return b
+end
+
+makeMasterBtn("ALL -> ON", UDim2.new(0, 20, 0, 36 + #FILES*40), function()
+    for _, entry in ipairs(FILES) do
+        local ok, res = process_file_toggle(entry, "set_on")
+        local st = buttons[entry.name] and buttons[entry.name].status
+        if ok then
+            if st then st.Text = ("OK: set ON (%d)"):format(res.changed) end
+        else
+            if st then st.Text = "ERR: "..tostring(res) end
+        end
+    end
+end)
+
+makeMasterBtn("ALL -> OFF", UDim2.new(0, 140, 0, 36 + #FILES*40), function()
+    for _, entry in ipairs(FILES) do
+        local ok, res = process_file_toggle(entry, "set_off")
+        local st = buttons[entry.name] and buttons[entry.name].status
+        if ok then
+            if st then st.Text = ("OK: set OFF (%d)"):format(res.changed) end
+        else
+            if st then st.Text = "ERR: "..tostring(res) end
+        end
+    end
+end)
+
+makeMasterBtn("ALL -> TOGGLE", UDim2.new(0, 260, 0, 36 + #FILES*40), function()
+    for _, entry in ipairs(FILES) do
+        local ok, res = process_file_toggle(entry, "toggle")
+        local st = buttons[entry.name] and buttons[entry.name].status
+        if ok then
+            if st then st.Text = ("OK: toggle -> %s (%d)"):format(tostring(res.target), res.changed) end
+        else
+            if st then st.Text = "ERR: "..tostring(res) end
+        end
+    end
+end)
+
+-- small helper: close GUI
+local closeBtn = Instance.new("TextButton", frame)
+closeBtn.Size = UDim2.new(0, 24, 0, 20)
+closeBtn.Position = UDim2.new(1, -30, 0, 6)
+closeBtn.Text = "X"
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 14
+closeBtn.BackgroundColor3 = Color3.fromRGB(150,50,50)
+closeBtn.TextColor3 = Color3.fromRGB(255,255,255)
+closeBtn.BorderSizePixel = 0
+closeBtn.MouseButton1Click:Connect(function()
+    screenGui:Destroy()
+end)
+
+print("[toggle_json_rules] GUI created. Use buttons to set ON/OFF/TOGGLE. Backups (*.bak) are created before overwriting.")
