@@ -1,9 +1,8 @@
--- Asset ID replacer (Purple Portal only).
+-- Asset ID replacer (Purple Portal only), optimized: Workspace-only scan, batched processing, reduced logs, simplified UI.
 -- Place as a LocalScript (PlayerScripts / StarterPlayerScripts) so it can create GUI in PlayerGui.
 
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
-
 if not LocalPlayer then
     LocalPlayer = Players.PlayerAdded:Wait()
 end
@@ -172,59 +171,103 @@ local function replaceOnInstance(instance, profile)
     return changed
 end
 
-local function sweepAll(profile)
+-- Sweep only Workspace descendants, in batches to avoid frame hogging
+local function sweepWorkspaceBatched(profile, batchSize, yieldTime)
+    batchSize = batchSize or 200
+    yieldTime = yieldTime or 0.03 -- seconds
+
+    local descendants = workspace:GetDescendants()
     local replacedCount = 0
-    for _, inst in ipairs(game:GetDescendants()) do
-        if replaceOnInstance(inst, profile) then
-            replacedCount += 1
+    local total = #descendants
+
+    for i = 1, total, batchSize do
+        local limit = math.min(i + batchSize - 1, total)
+        for j = i, limit do
+            local inst = descendants[j]
+            if replaceOnInstance(inst, profile) then
+                replacedCount = replacedCount + 1
+            end
         end
+        task.wait(yieldTime)
     end
 
     if replacedCount > 0 then
-        print(('[AssetReplacer] Replaced %d assets for profile: %s'):format(replacedCount, profile.displayName))
+        print(('[AssetReplacer] Replaced %d assets (Workspace scan) for profile: %s'):format(replacedCount, profile.displayName))
+    else
+        print(('[AssetReplacer] No replacements needed (Workspace scan) for profile: %s'):format(profile.displayName))
     end
+end
+
+-- DescendantAdded queue + processor (debounced batching)
+local addQueue = {}
+local queueLock = false
+local queueProcessor = nil
+
+local function enqueueDescendant(desc)
+    if not desc then return end
+    table.insert(addQueue, desc)
+end
+
+local function startQueueProcessor(profile)
+    if queueProcessor then return end
+    queueProcessor = task.spawn(function()
+        while isEnabled do
+            if #addQueue == 0 then
+                task.wait(0.12)
+            else
+                -- process up to N items per tick
+                local toProcess = math.min(#addQueue, 50)
+                for i = 1, toProcess do
+                    local desc = table.remove(addQueue, 1)
+                    if desc then
+                        pcall(function()
+                            replaceOnInstance(desc, profile)
+                        end)
+                    end
+                end
+                task.wait(0.05)
+            end
+        end
+        queueProcessor = nil
+    end)
 end
 
 local descAddedConn = nil
 local isEnabled = false
 
 local function enableReplacer()
-    if isEnabled then
-        return
-    end
-
+    if isEnabled then return end
     isEnabled = true
+
+    -- Start a batched sweep of Workspace only
     task.defer(function()
-        sweepAll(currentProfile)
+        sweepWorkspaceBatched(currentProfile, 200, 0.03)
     end)
 
+    -- Queue new descendants for debounced processing
     descAddedConn = game.DescendantAdded:Connect(function(desc)
-        task.defer(function()
-            pcall(function()
-                replaceOnInstance(desc, currentProfile)
-            end)
-        end)
+        enqueueDescendant(desc)
     end)
+
+    startQueueProcessor(currentProfile)
 
     print("[AssetReplacer] Enabled for profile:", currentProfile.displayName)
 end
 
 local function disableReplacer()
-    if not isEnabled then
-        return
-    end
-
+    if not isEnabled then return end
     isEnabled = false
     if descAddedConn then
         descAddedConn:Disconnect()
         descAddedConn = nil
     end
-
+    -- clear queue
+    addQueue = {}
     print("[AssetReplacer] Disabled.")
 end
 
 local function setProfileByIndex(index)
-    -- With only one profile available this is a safe no-op setter
+    -- Only one profile; safe no-op setter
     currentProfileIndex = index
     currentProfile = profiles[profileKeys[currentProfileIndex]]
     if not currentProfile then
@@ -236,12 +279,12 @@ local function setProfileByIndex(index)
 
     if isEnabled then
         task.defer(function()
-            sweepAll(currentProfile)
+            sweepWorkspaceBatched(currentProfile, 200, 0.03)
         end)
     end
 end
 
--- Build simple GUI
+-- Build a smaller, simpler GUI
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "AssetReplacerGUI"
 screenGui.Parent = PlayerGui
@@ -249,74 +292,54 @@ screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 
 local mainFrame = Instance.new("Frame")
-mainFrame.Size = UDim2.new(0, 280, 0, 130)
-mainFrame.Position = UDim2.new(0.5, -140, 0.5, -65)
+mainFrame.Size = UDim2.new(0, 240, 0, 96)
+mainFrame.Position = UDim2.new(0, 12, 0, 12)
 mainFrame.BackgroundColor3 = Color3.fromRGB(36, 36, 36)
 mainFrame.BorderSizePixel = 0
 mainFrame.Parent = screenGui
-mainFrame.Active = true
-mainFrame.Draggable = true
-
-local titleBar = Instance.new("Frame")
-titleBar.Size = UDim2.new(1, 0, 0, 28)
-titleBar.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-titleBar.BorderSizePixel = 0
-titleBar.Parent = mainFrame
 
 local titleLabel = Instance.new("TextLabel")
-titleLabel.Size = UDim2.new(0.7, 0, 1, 0)
-titleLabel.Position = UDim2.new(0, 6, 0, 0)
+titleLabel.Size = UDim2.new(1, -12, 0, 24)
+titleLabel.Position = UDim2.new(0, 6, 0, 6)
 titleLabel.BackgroundTransparency = 1
 titleLabel.TextColor3 = Color3.fromRGB(240, 240, 240)
 titleLabel.Font = Enum.Font.SourceSansBold
-titleLabel.TextSize = 18
-titleLabel.Text = "Asset Replacer"
-titleLabel.Parent = titleBar
-
-local closeBtn = Instance.new("TextButton")
-closeBtn.Size = UDim2.new(0, 28, 1, 0)
-closeBtn.Position = UDim2.new(1, -32, 0, 0)
-closeBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
-closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-closeBtn.Font = Enum.Font.SourceSansBold
-closeBtn.TextSize = 18
-closeBtn.Text = "X"
-closeBtn.Parent = titleBar
-closeBtn.MouseButton1Click:Connect(function()
-    screenGui.Enabled = false
-end)
-
-local profileLabel = Instance.new("TextLabel")
-profileLabel.Size = UDim2.new(1, -12, 0, 22)
-profileLabel.Position = UDim2.new(0, 6, 0, 34)
-profileLabel.BackgroundTransparency = 1
-profileLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
-profileLabel.Font = Enum.Font.SourceSans
-profileLabel.TextSize = 16
-profileLabel.Text = "Profile: " .. currentProfile.displayName
-profileLabel.TextXAlignment = Enum.TextXAlignment.Left
-profileLabel.Parent = mainFrame
+titleLabel.TextSize = 16
+titleLabel.Text = "Asset Replacer — Purple Portal"
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Parent = mainFrame
 
 local toggleButton = Instance.new("TextButton")
-toggleButton.Size = UDim2.new(0.9, 0, 0, 36)
-toggleButton.Position = UDim2.new(0.05, 0, 0.35, 0)
+toggleButton.Size = UDim2.new(0.6, 0, 0, 28)
+toggleButton.Position = UDim2.new(0, 6, 0, 36)
 toggleButton.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
 toggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 toggleButton.Font = Enum.Font.SourceSansBold
-toggleButton.TextSize = 16
+toggleButton.TextSize = 14
 toggleButton.Text = "Replacer: OFF"
 toggleButton.Parent = mainFrame
 
-local infoLabel = Instance.new("TextLabel")
-infoLabel.Size = UDim2.new(0.9, 0, 0, 40)
-infoLabel.Position = UDim2.new(0.05, 0, 0.7, 0)
-infoLabel.BackgroundTransparency = 1
-infoLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-infoLabel.Font = Enum.Font.SourceSans
-infoLabel.TextSize = 12
-infoLabel.Text = "Purple Portal profile only. Skipped rules (if any) are logged to Output."
-infoLabel.TextWrapped = true
-infoLabel.Parent = mainFrame
+local runButton = Instance.new("TextButton")
+runButton.Size = UDim2.new(0.34, -6, 0, 28)
+runButton.Position = UDim2.new(0.62, 6, 0, 36)
+runButton.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+runButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+runButton.Font = Enum.Font.SourceSans
+toggleButton.Font = Enum.Font.SourceSansBold
+runButton.TextSize = 14
+runButton.Text = "Process Now"
+runButton.Parent = mainFrame
+
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Size = UDim2.new(1, -12, 0, 24)
+statusLabel.Position = UDim2.new(0, 6, 0, 68)
+statusLabel.BackgroundTransparency = 1
+statusLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+statusLabel.Font = Enum.Font.SourceSans
+statusLabel.TextSize = 12
+statusLabel.Text = "Status: Idle"
+statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+statusLabel.Parent = mainFrame
 
 -- Toggle behavior
 toggleButton.MouseButton1Click:Connect(function()
@@ -324,11 +347,21 @@ toggleButton.MouseButton1Click:Connect(function()
         disableReplacer()
         toggleButton.Text = "Replacer: OFF"
         toggleButton.BackgroundColor3 = Color3.fromRGB(180, 0, 0)
+        statusLabel.Text = "Status: Disabled"
     else
         enableReplacer()
         toggleButton.Text = "Replacer: ON"
         toggleButton.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
+        statusLabel.Text = "Status: Running (Workspace)"
     end
+end)
+
+runButton.MouseButton1Click:Connect(function()
+    statusLabel.Text = "Status: Processing (manual)"
+    task.defer(function()
+        sweepWorkspaceBatched(currentProfile, 200, 0.03)
+        statusLabel.Text = "Status: Idle"
+    end)
 end)
 
 for _, prof in pairs(profiles) do
@@ -344,4 +377,5 @@ task.defer(function()
     enableReplacer()
     toggleButton.Text = "Replacer: ON"
     toggleButton.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
+    statusLabel.Text = "Status: Running (Workspace)"
 end)
