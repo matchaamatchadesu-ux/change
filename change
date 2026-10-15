@@ -3,6 +3,11 @@
 
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
+
+if not LocalPlayer then
+    LocalPlayer = Players.PlayerAdded:Wait()
+end
+
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
 -- Profiles generated from provided JSON files.
@@ -52,7 +57,6 @@ local profiles = {
             ["16861489713"] = "87566497889692",
             ["18771266258"] = "92971695105674",
         },
-        -- Some rules in the JSON had no with_id (skipped). We record them to log.
         skipped = {
             "Rocks from Portal Z",
             "Portal V Meshes",
@@ -66,7 +70,6 @@ local profiles = {
             ["11505415155"] = "107007852262895",
             ["11505409366"] = "93696108586426",
             ["11595826769"] = "76913156933878",
-            -- UnWhiteable Images (map many old ids -> 97607013681812)
             ["1084999891"]    = "97607013681812",
             ["9721611825"]    = "97607013681812",
             ["7837704800"]    = "97607013681812",
@@ -124,7 +127,6 @@ local profiles = {
             ["11608704051"]   = "97607013681812",
             ["8268137540"]    = "97607013681812",
             ["11609020974"]   = "97607013681812",
-            -- White Portal Icon
             ["114914780752454"] = "105836483087285",
         },
         skipped = {
@@ -140,7 +142,6 @@ local profiles = {
             ["11505415155"] = "115987600976732",
             ["11505409366"] = "80333987758391",
             ["11595826769"] = "76913156933878",
-            -- UnPurplable Images -> same big list -> 97607013681812
             ["1084999891"]    = "97607013681812",
             ["9721611825"]    = "97607013681812",
             ["7837704800"]    = "97607013681812",
@@ -198,7 +199,6 @@ local profiles = {
             ["11608704051"]   = "97607013681812",
             ["8268137540"]    = "97607013681812",
             ["11609020974"]   = "97607013681812",
-            -- Purple Portal Icon
             ["114914780752454"] = "128706896297354",
         },
         skipped = {
@@ -208,112 +208,161 @@ local profiles = {
     },
 }
 
--- Order of profiles for UI cycling:
+for _, profile in pairs(profiles) do
+    if type(profile.mappings) == "table" then
+        profile.entries = {}
+        for oldIdStr, newIdStr in pairs(profile.mappings) do
+            table.insert(profile.entries, {
+                search = tostring(oldIdStr),
+                replaceWith = "rbxassetid://" .. tostring(newIdStr),
+            })
+        end
+    end
+end
+
 local profileKeys = {"purple_ttk", "white_portal", "purple_portal"}
 local currentProfileIndex = 1
 local currentProfile = profiles[profileKeys[currentProfileIndex]]
 
--- List of common properties to try replacing (safe pcall used)
 local candidateProperties = {
     "MeshId",
     "Texture",
     "Image",
     "SoundId",
-    "TextureId", -- sometimes used
-    "BackImage",  -- UI-ish (if any)
+    "TextureId",
+    "BackImage",
 }
 
--- Utility: try read a property safely
 local function safeGet(instance, prop)
-    local ok, val = pcall(function() return instance[prop] end)
-    if ok then return val end
+    local ok, value = pcall(function()
+        return instance[prop]
+    end)
+    if ok then
+        return value
+    end
     return nil
 end
 
--- Utility: try set a property safely
 local function safeSet(instance, prop, value)
-    pcall(function() instance[prop] = value end)
+    local ok = pcall(function()
+        instance[prop] = value
+    end)
+    return ok
 end
 
--- Replace function for a single instance, using provided mapping table (string->string)
-local function replaceOnInstance(instance, mapping)
-    if not instance then return end
-    -- For each mapping (oldIdStr -> newIdStr)
-    for oldIdStr, newIdStr in pairs(mapping) do
-        local search = tostring(oldIdStr)
-        local replaceWith = "rbxassetid://" .. tostring(newIdStr)
+local function replaceOnInstance(instance, profile)
+    if not instance or typeof(instance) ~= "Instance" then
+        return false
+    end
 
-        -- If MeshPart / SpecialMesh, check MeshId specifically for slightly better performance
-        if instance:IsA("MeshPart") or instance:IsA("SpecialMesh") then
-            local meshVal = safeGet(instance, "MeshId")
-            if type(meshVal) == "string" and string.find(meshVal, search, 1, true) then
-                safeSet(instance, "MeshId", replaceWith)
-                --print log
-                print("[AssetReplacer] Replaced MeshId on", instance:GetFullName(), search, "->", replaceWith)
-            end
-        end
+    local changed = false
+    local entries = profile.entries
+    if not entries then
+        return false
+    end
 
-        -- Generic candidate properties
-        for _, prop in ipairs(candidateProperties) do
-            local val = safeGet(instance, prop)
-            if type(val) == "string" and string.find(val, search, 1, true) then
-                safeSet(instance, prop, replaceWith)
-                print(("[AssetReplacer] Replaced %s.%s: %s -> %s"):format(instance:GetFullName(), prop, search, replaceWith))
+    if instance:IsA("MeshPart") or instance:IsA("SpecialMesh") then
+        local meshVal = safeGet(instance, "MeshId")
+        if type(meshVal) == "string" then
+            for _, entry in ipairs(entries) do
+                if string.find(meshVal, entry.search, 1, true) then
+                    if safeSet(instance, "MeshId", entry.replaceWith) then
+                        changed = true
+                    end
+                    break
+                end
             end
         end
     end
+
+    for _, prop in ipairs(candidateProperties) do
+        local value = safeGet(instance, prop)
+        if type(value) ~= "string" or value == "" then
+            continue
+        end
+
+        for _, entry in ipairs(entries) do
+            if string.find(value, entry.search, 1, true) then
+                if safeSet(instance, prop, entry.replaceWith) then
+                    changed = true
+                end
+                break
+            end
+        end
+    end
+
+    return changed
 end
 
--- Process all existing descendants (initial sweep)
-local function sweepAll(mapping)
+local function sweepAll(profile)
+    local replacedCount = 0
     for _, inst in ipairs(game:GetDescendants()) do
-        replaceOnInstance(inst, mapping)
+        if replaceOnInstance(inst, profile) then
+            replacedCount += 1
+        end
+    end
+
+    if replacedCount > 0 then
+        print(('[AssetReplacer] Replaced %d assets for profile: %s'):format(replacedCount, profile.displayName))
     end
 end
 
--- Connection for new descendants
 local descAddedConn = nil
-
 local isEnabled = false
 
 local function enableReplacer()
-    if isEnabled then return end
+    if isEnabled then
+        return
+    end
+
     isEnabled = true
-    -- Replace existing
-    sweepAll(currentProfile.mappings)
-    -- Connect to future additions
+    task.defer(function()
+        sweepAll(currentProfile)
+    end)
+
     descAddedConn = game.DescendantAdded:Connect(function(desc)
-        -- small delay may help objects initialize properties
-        -- protect with pcall in case of weird objects
-        pcall(function()
-            replaceOnInstance(desc, currentProfile.mappings)
+        task.defer(function()
+            pcall(function()
+                replaceOnInstance(desc, currentProfile)
+            end)
         end)
     end)
+
     print("[AssetReplacer] Enabled for profile:", currentProfile.displayName)
 end
 
 local function disableReplacer()
-    if not isEnabled then return end
+    if not isEnabled then
+        return
+    end
+
     isEnabled = false
     if descAddedConn then
         descAddedConn:Disconnect()
         descAddedConn = nil
     end
+
     print("[AssetReplacer] Disabled.")
 end
 
--- Switch profile
 local function setProfileByIndex(index)
     currentProfileIndex = index
     currentProfile = profiles[profileKeys[currentProfileIndex]]
+
+    if not currentProfile then
+        currentProfileIndex = 1
+        currentProfile = profiles[profileKeys[currentProfileIndex]]
+    end
+
     print("[AssetReplacer] Profile set to:", currentProfile.displayName)
-    -- If enabled, re-run sweep with new mapping
+
     if isEnabled then
-        sweepAll(currentProfile.mappings)
+        task.defer(function()
+            sweepAll(currentProfile)
+        end)
     end
 end
 
--- Build simple GUI (mobile compatible)
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "AssetReplacerGUI"
 screenGui.Parent = PlayerGui
@@ -330,16 +379,16 @@ mainFrame.Active = true
 mainFrame.Draggable = true
 
 local titleBar = Instance.new("Frame")
-titleBar.Size = UDim2.new(1,0,0,28)
-titleBar.BackgroundColor3 = Color3.fromRGB(60,60,60)
+titleBar.Size = UDim2.new(1, 0, 0, 28)
+titleBar.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
 titleBar.BorderSizePixel = 0
 titleBar.Parent = mainFrame
 
 local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(0.7, 0, 1, 0)
-titleLabel.Position = UDim2.new(0,6,0,0)
+titleLabel.Position = UDim2.new(0, 6, 0, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.TextColor3 = Color3.fromRGB(240,240,240)
+titleLabel.TextColor3 = Color3.fromRGB(240, 240, 240)
 titleLabel.Font = Enum.Font.SourceSansBold
 titleLabel.TextSize = 18
 titleLabel.Text = "Asset Replacer"
@@ -348,8 +397,8 @@ titleLabel.Parent = titleBar
 local closeBtn = Instance.new("TextButton")
 closeBtn.Size = UDim2.new(0, 28, 1, 0)
 closeBtn.Position = UDim2.new(1, -32, 0, 0)
-closeBtn.BackgroundColor3 = Color3.fromRGB(200,50,50)
-closeBtn.TextColor3 = Color3.fromRGB(255,255,255)
+closeBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 closeBtn.Font = Enum.Font.SourceSansBold
 closeBtn.TextSize = 18
 closeBtn.Text = "X"
@@ -360,9 +409,9 @@ end)
 
 local profileLabel = Instance.new("TextLabel")
 profileLabel.Size = UDim2.new(1, -12, 0, 22)
-profileLabel.Position = UDim2.new(0,6,0,34)
+profileLabel.Position = UDim2.new(0, 6, 0, 34)
 profileLabel.BackgroundTransparency = 1
-profileLabel.TextColor3 = Color3.fromRGB(220,220,220)
+profileLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
 profileLabel.Font = Enum.Font.SourceSans
 profileLabel.TextSize = 16
 profileLabel.Text = "Profile: " .. currentProfile.displayName
@@ -372,8 +421,8 @@ profileLabel.Parent = mainFrame
 local toggleButton = Instance.new("TextButton")
 toggleButton.Size = UDim2.new(0.9, 0, 0, 36)
 toggleButton.Position = UDim2.new(0.05, 0, 0.35, 0)
-toggleButton.BackgroundColor3 = Color3.fromRGB(0,150,0)
-toggleButton.TextColor3 = Color3.fromRGB(255,255,255)
+toggleButton.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
+toggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 toggleButton.Font = Enum.Font.SourceSansBold
 toggleButton.TextSize = 16
 toggleButton.Text = "Replacer: OFF"
@@ -382,8 +431,8 @@ toggleButton.Parent = mainFrame
 local prevBtn = Instance.new("TextButton")
 prevBtn.Size = UDim2.new(0.28, 0, 0, 26)
 prevBtn.Position = UDim2.new(0.04, 0, 0.7, 0)
-prevBtn.BackgroundColor3 = Color3.fromRGB(100,100,100)
-prevBtn.TextColor3 = Color3.fromRGB(255,255,255)
+prevBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+prevBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 prevBtn.Font = Enum.Font.SourceSans
 prevBtn.TextSize = 14
 prevBtn.Text = "< Prev"
@@ -392,8 +441,8 @@ prevBtn.Parent = mainFrame
 local nextBtn = Instance.new("TextButton")
 nextBtn.Size = UDim2.new(0.28, 0, 0, 26)
 nextBtn.Position = UDim2.new(0.68, 0, 0.7, 0)
-nextBtn.BackgroundColor3 = Color3.fromRGB(100,100,100)
-nextBtn.TextColor3 = Color3.fromRGB(255,255,255)
+nextBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+nextBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 nextBtn.Font = Enum.Font.SourceSans
 nextBtn.TextSize = 14
 nextBtn.Text = "Next >"
@@ -403,53 +452,54 @@ local infoLabel = Instance.new("TextLabel")
 infoLabel.Size = UDim2.new(0.44, 0, 0, 40)
 infoLabel.Position = UDim2.new(0.34, 0, 0.7, 0)
 infoLabel.BackgroundTransparency = 1
-infoLabel.TextColor3 = Color3.fromRGB(200,200,200)
+infoLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
 infoLabel.Font = Enum.Font.SourceSans
 infoLabel.TextSize = 12
 infoLabel.Text = "Skipped rules will be logged in Output."
 infoLabel.TextWrapped = true
 infoLabel.Parent = mainFrame
 
--- Button behaviors
 toggleButton.MouseButton1Click:Connect(function()
     if isEnabled then
         disableReplacer()
         toggleButton.Text = "Replacer: OFF"
-        toggleButton.BackgroundColor3 = Color3.fromRGB(180,0,0)
+        toggleButton.BackgroundColor3 = Color3.fromRGB(180, 0, 0)
     else
         enableReplacer()
         toggleButton.Text = "Replacer: ON"
-        toggleButton.BackgroundColor3 = Color3.fromRGB(0,150,0)
+        toggleButton.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
     end
 end)
 
 prevBtn.MouseButton1Click:Connect(function()
-    currentProfileIndex = currentProfileIndex - 1
-    if currentProfileIndex < 1 then currentProfileIndex = #profileKeys end
-    setProfileByIndex(currentProfileIndex)
+    local nextIndex = currentProfileIndex - 1
+    if nextIndex < 1 then
+        nextIndex = #profileKeys
+    end
+    setProfileByIndex(nextIndex)
     profileLabel.Text = "Profile: " .. currentProfile.displayName
 end)
 
 nextBtn.MouseButton1Click:Connect(function()
-    currentProfileIndex = currentProfileIndex + 1
-    if currentProfileIndex > #profileKeys then currentProfileIndex = 1 end
-    setProfileByIndex(currentProfileIndex)
+    local nextIndex = currentProfileIndex + 1
+    if nextIndex > #profileKeys then
+        nextIndex = 1
+    end
+    setProfileByIndex(nextIndex)
     profileLabel.Text = "Profile: " .. currentProfile.displayName
 end)
 
--- Log skipped rules to Output once
-for key,prof in pairs(profiles) do
+for _, prof in pairs(profiles) do
     if prof.skipped and #prof.skipped > 0 then
         for _, name in ipairs(prof.skipped) do
-            print(("[AssetReplacer] Profile '%s' contains a rule with no with_id and is skipped: %s"):format(prof.displayName, tostring(name)))
+            print(('[AssetReplacer] Profile "%s" contains a rule with no with_id and is skipped: %s'):format(prof.displayName, tostring(name)))
         end
     end
 end
 
--- Start with replacer disabled; enable automatically if you want:
--- enableReplacer()
-
--- Auto-enable on script run to mimic original behavior:
-enableReplacer()
-toggleButton.Text = "Replacer: ON"
-toggleButton.BackgroundColor3 = Color3.fromRGB(0,150,0)
+-- Start in a deferred state to avoid heavy initial workload at spawn.
+task.defer(function()
+    enableReplacer()
+    toggleButton.Text = "Replacer: ON"
+    toggleButton.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
+end)
