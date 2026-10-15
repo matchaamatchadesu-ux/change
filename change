@@ -1,4 +1,4 @@
--- Asset ID replacer using the three JSON files' contents as profiles.
+-- Asset ID replacer (Purple Portal only).
 -- Place as a LocalScript (PlayerScripts / StarterPlayerScripts) so it can create GUI in PlayerGui.
 
 local Players = game:GetService("Players")
@@ -10,131 +10,8 @@ end
 
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
--- Profiles generated from provided JSON files.
--- Each profile maps oldIdString -> newIdString (numbers stored as strings for safe string.find usage).
+-- Only the Purple Portal profile is included per request.
 local profiles = {
-    ["purple_ttk"] = {
-        displayName = "purple ttk",
-        mappings = {
-            ["13445835817"] = "98782654528626",
-            ["12967173460"] = "119725878498870",
-            ["13395423415"] = "90301936548452",
-            ["13398626797"] = "90936653370000",
-            ["12991508490"] = "95668206963957",
-            ["12597716531"] = "100715146905132",
-            ["13403638699"] = "83985640460623",
-            ["13292295432"] = "116280510322467",
-            ["13292221548"] = "111015209260895",
-            ["13395481373"] = "127817303636701",
-            ["13395479051"] = "101511849129959",
-            ["13395453034"] = "90952531873466",
-            ["13388299052"] = "95201700365989",
-            ["11503727043"] = "105000304422632",
-            ["13380253135"] = "127218807287181",
-            ["12867876828"] = "85201306954759",
-            ["11978273841"] = "118852903407168",
-            ["9899987630"]  = "131191389328914",
-            ["9732280828"]  = "131517786114033",
-            ["9732292273"]  = "97424518284664",
-            ["13378639290"] = "84499737935243",
-            ["13398737719"] = "97926209862458",
-            ["13380336960"] = "78153548962368",
-            ["13380601033"] = "128495428378474",
-            ["11505137329"] = "123769496765863",
-            ["13378691792"] = "91912118827176",
-            ["13266625961"] = "122936817398124",
-            ["12867668045"] = "87486688986251",
-            ["13379238019"] = "109961783164825",
-            ["13398805538"] = "91993374482982",
-            ["11026658044"] = "82769339280366",
-            ["11759396824"] = "111547157243605",
-            ["11133563100"] = "113566198257258",
-            ["11133601425"] = "83143477004383",
-            ["12856232690"] = "101822195698178",
-            ["18510134527"] = "70767399426324",
-            ["16860947377"] = "106145057938354",
-            ["16861560848"] = "74490146968303",
-            ["16861489713"] = "87566497889692",
-            ["18771266258"] = "92971695105674",
-        },
-        skipped = {
-            "Rocks from Portal Z",
-            "Portal V Meshes",
-        },
-    },
-
-    ["white_portal"] = {
-        displayName = "WhitePortal",
-        mappings = {
-            ["11505401455"] = "111131549150022",
-            ["11505415155"] = "107007852262895",
-            ["11505409366"] = "93696108586426",
-            ["11595826769"] = "76913156933878",
-            ["1084999891"]    = "97607013681812",
-            ["9721611825"]    = "97607013681812",
-            ["7837704800"]    = "97607013681812",
-            ["9760500840"]    = "97607013681812",
-            ["11505437937"]   = "97607013681812",
-            ["6679618752"]    = "97607013681812",
-            ["115987600976732"] = "97607013681812",
-            ["75691495314927"]   = "97607013681812",
-            ["80333987758391"]   = "97607013681812",
-            ["779779034"]     = "97607013681812",
-            ["11472671285"]   = "97607013681812",
-            ["11460359308"]   = "97607013681812",
-            ["1084976679"]    = "97607013681812",
-            ["11492870634"]   = "97607013681812",
-            ["10472974536"]   = "97607013681812",
-            ["11517935503"]   = "97607013681812",
-            ["10472990183"]   = "97607013681812",
-            ["11197917329"]   = "97607013681812",
-            ["9087858527"]    = "97607013681812",
-            ["10331893022"]   = "97607013681812",
-            ["78916416165713"] = "97607013681812",
-            ["3029306948"]    = "97607013681812",
-            ["76913156933878"] = "97607013681812",
-            ["10536437810"]   = "97607013681812",
-            ["10874188963"]   = "97607013681812",
-            ["7994629137"]    = "97607013681812",
-            ["10762653221"]   = "97607013681812",
-            ["8466767701"]    = "97607013681812",
-            ["7216855914"]    = "97607013681812",
-            ["11536435403"]   = "97607013681812",
-            ["11187665050"]   = "97607013681812",
-            ["11518060690"]   = "97607013681812",
-            ["11548034018"]   = "97607013681812",
-            ["11518019293"]   = "97607013681812",
-            ["9659478878"]    = "97607013681812",
-            ["11547621182"]   = "97607013681812",
-            ["11547974831"]   = "97607013681812",
-            ["9181472195"]    = "97607013681812",
-            ["11554581930"]   = "97607013681812",
-            ["11187906867"]   = "97607013681812",
-            ["11546611176"]   = "97607013681812",
-            ["8050136743"]    = "97607013681812",
-            ["8030746658"]    = "97607013681812",
-            ["8037636142"]    = "97607013681812",
-            ["9731160076"]    = "97607013681812",
-            ["11608969364"]   = "97607013681812",
-            ["6572632309"]    = "97607013681812",
-            ["9709779092"]    = "97607013681812",
-            ["11611204132"]   = "97607013681812",
-            ["290434402"]     = "97607013681812",
-            ["11608623406"]   = "97607013681812",
-            ["8844906383"]    = "97607013681812",
-            ["8845024159"]    = "97607013681812",
-            ["10561140814"]   = "97607013681812",
-            ["11608704051"]   = "97607013681812",
-            ["8268137540"]    = "97607013681812",
-            ["11609020974"]   = "97607013681812",
-            ["114914780752454"] = "105836483087285",
-        },
-        skipped = {
-            "Rocks from Portal Z",
-            "Portal V Meshes",
-        },
-    },
-
     ["purple_portal"] = {
         displayName = "Purple Portal",
         mappings = {
@@ -208,6 +85,7 @@ local profiles = {
     },
 }
 
+-- Precompute entries for faster checks
 for _, profile in pairs(profiles) do
     if type(profile.mappings) == "table" then
         profile.entries = {}
@@ -220,7 +98,7 @@ for _, profile in pairs(profiles) do
     end
 end
 
-local profileKeys = {"purple_ttk", "white_portal", "purple_portal"}
+local profileKeys = {"purple_portal"}
 local currentProfileIndex = 1
 local currentProfile = profiles[profileKeys[currentProfileIndex]]
 
@@ -278,15 +156,15 @@ local function replaceOnInstance(instance, profile)
     for _, prop in ipairs(candidateProperties) do
         local value = safeGet(instance, prop)
         if type(value) ~= "string" or value == "" then
-            continue
-        end
-
-        for _, entry in ipairs(entries) do
-            if string.find(value, entry.search, 1, true) then
-                if safeSet(instance, prop, entry.replaceWith) then
-                    changed = true
+            -- skip non-strings
+        else
+            for _, entry in ipairs(entries) do
+                if string.find(value, entry.search, 1, true) then
+                    if safeSet(instance, prop, entry.replaceWith) then
+                        changed = true
+                    end
+                    break
                 end
-                break
             end
         end
     end
@@ -346,9 +224,9 @@ local function disableReplacer()
 end
 
 local function setProfileByIndex(index)
+    -- With only one profile available this is a safe no-op setter
     currentProfileIndex = index
     currentProfile = profiles[profileKeys[currentProfileIndex]]
-
     if not currentProfile then
         currentProfileIndex = 1
         currentProfile = profiles[profileKeys[currentProfileIndex]]
@@ -363,6 +241,7 @@ local function setProfileByIndex(index)
     end
 end
 
+-- Build simple GUI
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "AssetReplacerGUI"
 screenGui.Parent = PlayerGui
@@ -428,37 +307,18 @@ toggleButton.TextSize = 16
 toggleButton.Text = "Replacer: OFF"
 toggleButton.Parent = mainFrame
 
-local prevBtn = Instance.new("TextButton")
-prevBtn.Size = UDim2.new(0.28, 0, 0, 26)
-prevBtn.Position = UDim2.new(0.04, 0, 0.7, 0)
-prevBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
-prevBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-prevBtn.Font = Enum.Font.SourceSans
-prevBtn.TextSize = 14
-prevBtn.Text = "< Prev"
-prevBtn.Parent = mainFrame
-
-local nextBtn = Instance.new("TextButton")
-nextBtn.Size = UDim2.new(0.28, 0, 0, 26)
-nextBtn.Position = UDim2.new(0.68, 0, 0.7, 0)
-nextBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
-nextBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-nextBtn.Font = Enum.Font.SourceSans
-nextBtn.TextSize = 14
-nextBtn.Text = "Next >"
-nextBtn.Parent = mainFrame
-
 local infoLabel = Instance.new("TextLabel")
-infoLabel.Size = UDim2.new(0.44, 0, 0, 40)
-infoLabel.Position = UDim2.new(0.34, 0, 0.7, 0)
+infoLabel.Size = UDim2.new(0.9, 0, 0, 40)
+infoLabel.Position = UDim2.new(0.05, 0, 0.7, 0)
 infoLabel.BackgroundTransparency = 1
 infoLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
 infoLabel.Font = Enum.Font.SourceSans
 infoLabel.TextSize = 12
-infoLabel.Text = "Skipped rules will be logged in Output."
+infoLabel.Text = "Purple Portal profile only. Skipped rules (if any) are logged to Output."
 infoLabel.TextWrapped = true
 infoLabel.Parent = mainFrame
 
+-- Toggle behavior
 toggleButton.MouseButton1Click:Connect(function()
     if isEnabled then
         disableReplacer()
@@ -471,24 +331,6 @@ toggleButton.MouseButton1Click:Connect(function()
     end
 end)
 
-prevBtn.MouseButton1Click:Connect(function()
-    local nextIndex = currentProfileIndex - 1
-    if nextIndex < 1 then
-        nextIndex = #profileKeys
-    end
-    setProfileByIndex(nextIndex)
-    profileLabel.Text = "Profile: " .. currentProfile.displayName
-end)
-
-nextBtn.MouseButton1Click:Connect(function()
-    local nextIndex = currentProfileIndex + 1
-    if nextIndex > #profileKeys then
-        nextIndex = 1
-    end
-    setProfileByIndex(nextIndex)
-    profileLabel.Text = "Profile: " .. currentProfile.displayName
-end)
-
 for _, prof in pairs(profiles) do
     if prof.skipped and #prof.skipped > 0 then
         for _, name in ipairs(prof.skipped) do
@@ -497,7 +339,7 @@ for _, prof in pairs(profiles) do
     end
 end
 
--- Start in a deferred state to avoid heavy initial workload at spawn.
+-- Auto-enable deferred to avoid blocking spawn
 task.defer(function()
     enableReplacer()
     toggleButton.Text = "Replacer: ON"
